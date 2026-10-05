@@ -1,0 +1,26 @@
+# Long-running gallery bound to this machine's Tailscale IPv4 on port 19000.
+# Shoots come from ~/.config/photo-gallery/shoots; edit it, then restart.
+#
+#   ln -s "$PWD/photo-gallery" ~/.local/bin/photo-gallery
+#   systemctl --user enable --now "$PWD/photo-gallery.service"
+#
+# If the photos live on a mount with its own unit, order after it in a drop-in
+# (systemctl --user edit photo-gallery): After=/Wants= that unit.
+[Unit]
+Description=photo-gallery culling server on Tailscale (port 19000)
+After=network-online.target
+Wants=network-online.target
+# Retry forever: at boot Tailscale or the photo mount may not be ready yet.
+StartLimitIntervalSec=0
+
+[Service]
+# A lingering user manager starts without the login PATH; Arch puts exiftool
+# in vendor_perl.
+Environment=PATH=/usr/local/bin:/usr/bin:/usr/bin/vendor_perl:/usr/bin/site_perl:/usr/bin/core_perl
+Environment=VIPS_WARNING=0
+ExecStart=%h/.local/bin/photo-gallery --host tailscale --port 19000 --title "Photo gallery"
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

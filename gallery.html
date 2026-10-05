@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>__TITLE__</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #161616; --panel: #1f1f1f; --panel2: #262626; --line: #333;
+  --fg: #e6e6e6; --dim: #9a9a9a; --faint: #666;
+  --accent: #6aa9ff; --star: #f2c94c; --red: #e5484d; --green: #46a758;
+  --thumb: 220px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, select, input { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: #555; }
+select { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+
+header { position: sticky; top: 0; z-index: 10; background: rgba(22,22,22,.94);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+  padding: 8px 16px; padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+.stats { color: var(--dim); display: flex; gap: 12px; flex-wrap: wrap; }
+.stats b { color: var(--fg); font-weight: 600; }
+.controls { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.controls label { display: flex; gap: 6px; align-items: center; color: var(--dim); }
+
+#filters { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#filters .lbl { color: var(--faint); margin-right: 2px; }
+#filters .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.chip { border-radius: 999px; padding: 2px 10px; display: inline-flex; gap: 6px; align-items: center;
+  font-variant-numeric: tabular-nums; user-select: none; }
+.chip .c { color: var(--faint); font-size: 11.5px; }
+.chip .dot { display: inline-block; vertical-align: -1px; margin-right: 3px; }
+.chip .m { display: none; font-weight: 700; }
+.chip.only { border-color: var(--accent); background: #17304f; color: #fff; }
+.chip.only .m { display: inline; color: var(--accent); }
+.chip.except { border-color: #7a2d30; background: #2a1517; color: #d8a3a5; }
+.chip.except .m { display: inline; color: var(--red); }
+.chip.except .t { text-decoration: line-through; }
+#clearF { color: var(--dim); }
+
+/* darktable-style rating range: drag across the strip to pick a contiguous range */
+#rate { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+  touch-action: none; user-select: none; cursor: pointer; }
+#rate .rc { min-width: 34px; padding: 2px 6px; display: flex; flex-direction: column; align-items: center;
+  line-height: 1.15; background: var(--panel2); border-left: 1px solid var(--line); }
+#rate .rc:first-child { border-left: 0; }
+#rate .rc b { font-weight: 600; color: var(--dim); }
+#rate .rc i { font-style: normal; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+#rate .rc.on { background: #17304f; }
+#rate .rc.on b { color: #fff; }
+#rate .rc.on i { color: #9fb7d6; }
+#rate .rc.on.v-1 { background: #3a1a1c; }
+#rate .rc.on.v-1 b { color: var(--red); }
+#rate.all .rc.on { background: var(--panel2); }
+#rate.all .rc.on b { color: var(--dim); }
+#rate.all .rc.on i { color: var(--faint); }
+#rateLbl { color: var(--dim); min-width: 64px; font-variant-numeric: tabular-nums; }
+
+main { padding: 8px 16px 64px; }
+section h2 { font-size: 13px; font-weight: 600; color: var(--dim); margin: 18px 0 8px;
+  display: flex; gap: 10px; align-items: baseline; cursor: pointer; user-select: none; }
+section h2:hover { color: var(--fg); }
+section h2 .car { display: inline-block; width: 12px; font-size: 14px; transition: transform .12s; color: var(--dim); }
+section.folded h2 .car { transform: rotate(-90deg); }
+section.folded h2 { margin-bottom: 0; }
+section h2 span { color: var(--faint); font-weight: 400; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb), 1fr)); gap: 6px; }
+
+.cell { position: relative; aspect-ratio: 3 / 2; background: #0e0e0e; border-radius: 4px;
+  overflow: hidden; cursor: zoom-in; outline: 2px solid transparent; outline-offset: -2px; }
+.cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cell.cur { outline-color: var(--accent); }
+.cell.rej img { opacity: .28; filter: grayscale(1); }
+.cell.stacked { box-shadow: 4px 4px 0 -1px #0e0e0e, 4px 4px 0 0 #444, 8px 8px 0 -1px #0e0e0e, 8px 8px 0 0 #333; overflow: visible; }
+.cell.stacked > img { border-radius: 4px; }
+.cell.ingroup { background: #12202f; }
+.cell.ingroup.alt { background: #241a2b; }
+.cell.ingroup::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--accent); opacity: .7; }
+.cell.ingroup.alt::after { background: #b07cd8; }
+
+.b { position: absolute; display: flex; gap: 4px; align-items: center; pointer-events: none;
+  font-size: 12px; text-shadow: 0 1px 2px #000; }
+.b.tl { top: 5px; left: 6px; }
+.b.tr { top: 5px; right: 6px; pointer-events: auto; }
+.b.bl { bottom: 5px; left: 6px; }
+.stars { color: var(--star); letter-spacing: 1px; }
+.rejx { color: var(--red); font-weight: 700; font-size: 15px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(0,0,0,.6); }
+.dot.l0 { background: var(--red); } .dot.l1 { background: #f5d90a; } .dot.l2 { background: var(--green); }
+.dot.l3 { background: #3e63dd; } .dot.l4 { background: #8e4ec6; }
+.stack { background: rgba(0,0,0,.72); border: 1px solid #555; border-radius: 10px; padding: 1px 8px;
+  cursor: pointer; font-variant-numeric: tabular-nums; color: #fff; }
+.stack:hover { border-color: var(--accent); }
+.hov { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 8px 6px;
+  background: linear-gradient(transparent, rgba(0,0,0,.85)); font-size: 11.5px; color: #ddd;
+  opacity: 0; transition: opacity .12s; pointer-events: none; }
+.hov .n { color: #fff; font-weight: 600; }
+.cell:hover .hov { opacity: 1; }
+.cell:hover .b.bl { opacity: 0; }
+
+#fs { position: fixed; inset: 0; z-index: 50; background: #0b0b0b; display: grid;
+  grid-template-columns: 1fr auto; grid-template-rows: 1fr auto; }
+#stage { grid-column: 1; grid-row: 1; overflow: hidden; position: relative; display: flex;
+  align-items: center; justify-content: center; cursor: zoom-in; user-select: none; }
+#stage img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; -webkit-user-drag: none; }
+#stage.zoom { display: block; overflow: auto; cursor: grab; }
+#stage.zoom img { max-width: none; max-height: none; }
+#stage.zoom.drag { cursor: grabbing; }
+#stage .spin { position: absolute; top: 10px; left: 12px; color: var(--dim); font-size: 12px; }
+#info { grid-column: 2; grid-row: 1 / span 2; width: 280px; background: var(--panel);
+  border-left: 1px solid var(--line); padding: 14px 16px; overflow-y: auto; }
+#info h3 { margin: 0 0 2px; font-size: 15px; }
+#info .sub { color: var(--dim); margin-bottom: 12px; }
+#info dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+#info dt { color: var(--dim); } #info dd { margin: 0; word-break: break-word; }
+#info .mark { font-size: 16px; margin: 10px 0 14px; display: flex; gap: 10px; align-items: center; min-height: 22px; }
+#fs.noinfo #info { display: none; }
+#fsbar { grid-column: 1; grid-row: 2; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 8px 12px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel); border-top: 1px solid var(--line); }
+#fsbar .pos { color: var(--dim); margin: 0 8px; font-variant-numeric: tabular-nums; }
+#fsbar .sp { flex: 1; }
+#fsbar button.on { border-color: var(--accent); color: #fff; }
+#fsbar .lr { color: var(--red); } #fsbar .lg { color: var(--green); }
+
+#help { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 16px; }
+#help .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; max-width: 520px; width: 100%; }
+#help h3 { margin: 0 0 10px; }
+#help table { border-collapse: collapse; width: 100%; }
+#help td { padding: 3px 6px; vertical-align: top; }
+#help td:first-child { white-space: nowrap; color: var(--dim); }
+kbd { background: var(--panel2); border: 1px solid #444; border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; color: var(--fg); }
+
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 90;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+#toast.err { border-color: var(--red); color: #ffb4b4; }
+.empty { color: var(--dim); padding: 40px 0; text-align: center; }
+
+@media (max-width: 700px) {
+  #fs { grid-template-columns: 1fr; grid-template-rows: 1fr auto auto; }
+  #info { grid-column: 1; grid-row: 3; width: auto; max-height: 30vh; border-left: 0; border-top: 1px solid var(--line); }
+  :root { --thumb: 150px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">__TITLE__</h1>
+  <div class="stats" id="stats"></div>
+  <div class="controls">
+    <button id="foldAll" title="Fold or unfold every shoot">fold all</button>
+    <label title="Expand every stack (Shift+E)"><input type="checkbox" id="expandAll"> expand stacks</label>
+    <label title="Move to the next frame after rating"><input type="checkbox" id="advance"> auto-advance</label>
+    <label title="Thumbnail size"><input type="range" id="size" min="120" max="420" step="10"></label>
+    <button id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+  </div>
+  <div id="filters">
+    <span class="lbl">rating</span>
+    <div id="rate" title="Click one, or drag across a range · double-click: all"></div>
+    <span id="rateLbl"></span>
+    <span class="sep"></span>
+    <span id="chips" style="display:contents" title="Click: show only · again: show except · again: off. Right-click jumps to except."></span>
+  </div>
+</header>
+<main id="main"></main>
+
+<div id="fs" hidden>
+  <div id="stage"><img id="fsimg" alt=""><div class="spin" id="spin" hidden>loading full size…</div></div>
+  <aside id="info"></aside>
+  <div id="fsbar">
+    <button data-act="prev" title="Previous (←)">←</button>
+    <button data-act="next" title="Next (→)">→</button>
+    <span class="pos" id="pos"></span>
+    <button data-act="rej" title="Reject (r)">✕</button>
+    <button data-act="r1">1★</button><button data-act="r2">2★</button><button data-act="r3">3★</button>
+    <button data-act="r4">4★</button><button data-act="r5">5★</button>
+    <button data-act="r0" title="Clear rating (0)">0</button>
+    <button data-act="red" class="lr" title="Red (d)">●</button>
+    <button data-act="green" class="lg" title="Green (f)">●</button>
+    <button data-act="nolabel" title="No colour (g)">○</button>
+    <span class="sp"></span>
+    <button data-act="undo" title="Undo (Ctrl+Z)">↶</button>
+    <button data-act="zoom" title="Toggle 100% (z / click)">1:1</button>
+    <button data-act="info" title="EXIF panel (i)">i</button>
+    <button data-act="close" title="Close (Esc)">✕ close</button>
+  </div>
+</div>
+
+<div id="help" hidden><div class="card">
+  <h3>Keys</h3>
+  <table>
+    <tr><td><kbd>r</kbd></td><td>reject (again to un-reject)</td></tr>
+    <tr><td><kbd>1</kbd>–<kbd>5</kbd> · <kbd>0</kbd></td><td>set stars · clear rating</td></tr>
+    <tr><td><kbd>d</kbd> <kbd>f</kbd> <kbd>g</kbd></td><td>red · green · no colour</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>undo · redo</td></tr>
+    <tr><td><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> / <kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd></td><td>move</td></tr>
+    <tr><td><kbd>Space</kbd> / <kbd>Enter</kbd> / click</td><td>full screen</td></tr>
+    <tr><td>click / <kbd>z</kbd> (full screen)</td><td>toggle fit ↔ 100% at that point; drag to pan</td></tr>
+    <tr><td><kbd>i</kbd></td><td>EXIF panel in full screen</td></tr>
+    <tr><td><kbd>e</kbd> · <kbd>Shift</kbd>+<kbd>E</kbd></td><td>expand/collapse this stack · all stacks</td></tr>
+    <tr><td>rating strip</td><td>click one value or drag across a range (✕ ○ 1–5) · double-click: all</td></tr>
+    <tr><td>colour chip</td><td>click: <b>only</b> → <b>except</b> → off · right-click: except</td></tr>
+    <tr><td><kbd>x</kbd></td><td>clear every filter</td></tr>
+    <tr><td>shoot header</td><td>click to fold/unfold · <kbd>Alt</kbd>+click folds every other shoot</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>leave full screen / close this</td></tr>
+  </table>
+  <p style="color:var(--dim);margin:12px 0 0">Marks write darktable XMP sidecars immediately. Stacks group frames shot within 4 s that look near-identical; the number is how many frames are in the stack. A frame shows when its rating is inside the strip's range, it matches any “only” colour chip, and it matches no “except” chip.</p>
+</div></div>
+<div id="toast" hidden></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const LABEL = { red: 0, green: 2 };
+let frames = [], byId = new Map(), groups = new Map();
+let visible = [];             // frame ids in display order
+let cur = null;               // current frame id
+let expanded = new Set();
+let undoStack = [], redoStack = [];
+let fsOpen = false, zoomed = false, mouseMoved = false;
+let filt = {};                // chip key -> 1 (only) | -1 (except)
+const RMIN = -1, RMAX = 5;    // ✕ rejected … 5 stars
+let range = [RMIN, RMAX];     // inclusive rating range
+let folded = new Set();       // folder names
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("pg:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("pg:" + k, JSON.stringify(v)); } catch {} },
+};
+
+function toast(msg, err) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = err ? "err" : ""; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), err ? 6000 : 1600);
+}
+
+async function load() {
+  const r = await fetch("/api/frames");
+  const data = await r.json();
+  frames = data.frames;
+  for (const f of frames) {
+    f.saved = { rating: f.rating, labels: f.labels.slice() };
+    byId.set(f.id, f);
+    if (!groups.has(f.group)) groups.set(f.group, []);
+    groups.get(f.group).push(f);
+  }
+  filt = store.get("filt", {});
+  for (const k of Object.keys(filt)) if (!CHIPS.some((c) => c.k === k)) delete filt[k];
+  const sr = store.get("range", [RMIN, RMAX]);
+  range = Array.isArray(sr) && sr.length === 2 ? [Math.max(RMIN, +sr[0]), Math.min(RMAX, +sr[1])] : [RMIN, RMAX];
+  buildRate();
+  folded = new Set(store.get("folded", []));
+  $("#expandAll").checked = store.get("expandAll", false);
+  $("#advance").checked = store.get("advance", false);
+  const size = store.get("size", 220);
+  $("#size").value = size; document.documentElement.style.setProperty("--thumb", size + "px");
+  render();
+}
+
+// Rating is a contiguous range picked on a darktable-style strip. Colour chips
+// are tri-state: "only" chips OR together, any matching "except" chip hides.
+const CHIPS = [
+  { k: "red", row: "colour", t: '<span class="dot l0"></span> red', test: (f) => f.labels.includes(0) },
+  { k: "green", row: "colour", t: '<span class="dot l2"></span> green', test: (f) => f.labels.includes(2) },
+  { k: "nolabel", row: "colour", t: "no colour", test: (f) => f.labels.length === 0 },
+];
+
+function passes(f) {
+  if (f.rating < range[0] || f.rating > range[1]) return false;
+  const rows = {};
+  for (const c of CHIPS) {
+    const s = filt[c.k];
+    if (!s) continue;
+    const hit = c.test(f);
+    if (s === -1 && hit) return false;
+    if (s === 1) rows[c.row] = rows[c.row] || hit;
+  }
+  return Object.values(rows).every(Boolean);
+}
+
+const fullRange = () => range[0] === RMIN && range[1] === RMAX;
+const filterActive = () => !fullRange() || Object.keys(filt).length > 0;
+const rateName = (v) => (v === -1 ? "✕" : v === 0 ? "○" : v + "★");
+
+function buildRate() {
+  let html = "";
+  for (let v = RMIN; v <= RMAX; v++)
+    html += `<div class="rc v${v}" data-v="${v}" title="${v === -1 ? "rejected" : v === 0 ? "not rated" : v + " star" + (v > 1 ? "s" : "")}"><b>${rateName(v)}</b><i></i></div>`;
+  $("#rate").innerHTML = html;
+}
+
+// Updates classes and counts in place so a drag in progress keeps its nodes.
+function paintRate() {
+  const counts = {};
+  for (const f of frames) counts[f.rating] = (counts[f.rating] || 0) + 1;
+  for (const el of $("#rate").children) {
+    const v = +el.dataset.v;
+    el.classList.toggle("on", v >= range[0] && v <= range[1]);
+    el.querySelector("i").textContent = counts[v] || 0;
+  }
+  $("#rate").classList.toggle("all", fullRange());
+  $("#rateLbl").textContent = fullRange() ? "all" : range[0] === range[1] ? rateName(range[0]) + " only" : `${rateName(range[0])} – ${rateName(range[1])}`;
+}
+
+function setRange(lo, hi, commit) {
+  range = [lo, hi];
+  paintRate();
+  if (commit) { store.set("range", range); render(); }
+}
+
+function renderFilters() {
+  const n = (c) => frames.reduce((a, f) => a + (c.test(f) ? 1 : 0), 0);
+  let html = '<span class="lbl">colour</span>';
+  for (const c of CHIPS) {
+    const s = filt[c.k], cls = s === 1 ? " only" : s === -1 ? " except" : "";
+    html += `<button class="chip${cls}" data-chip="${c.k}"><span class="m">${s === 1 ? "only" : "except"}</span><span class="t">${c.t}</span><span class="c">${n(c)}</span></button>`;
+  }
+  if (filterActive()) html += '<button id="clearF" title="Clear filters (x)">clear</button>';
+  $("#chips").innerHTML = html;
+  paintRate();
+}
+
+function clearFilters() {
+  filt = {}; range = [RMIN, RMAX];
+  store.set("filt", filt); store.set("range", range);
+  render();
+}
+
+function setChip(k, s) {
+  if (s) filt[k] = s; else delete filt[k];
+  store.set("filt", filt);
+  render();
+}
+
+function toggleFold(folder, others) {
+  const all = [...new Set(frames.map((f) => f.folder))];
+  if (others) folded = new Set(all.filter((x) => x !== folder));
+  else folded.has(folder) ? folded.delete(folder) : folded.add(folder);
+  store.set("folded", [...folded]);
+  render();
+}
+
+const isExpanded = (gid) => $("#expandAll").checked || expanded.has(gid);
+
+function fmtTime(ts) { return ts ? ts.slice(11, 19) : ""; }
+function shortExif(e) {
+  return [e.ExposureTime && e.ExposureTime + "s", e.FNumber && "f/" + e.FNumber,
+          e.ISO && "ISO " + e.ISO, e.FocalLength].filter(Boolean).join(" · ");
+}
+function marksHTML(f) {
+  let s = "";
+  if (f.rating === -1) s += '<span class="rejx">✕</span>';
+  else if (f.rating > 0) s += '<span class="stars">' + "★".repeat(f.rating) + "</span>";
+  return s;
+}
+function labelsHTML(f) { return f.labels.map((l) => `<span class="dot l${l}"></span>`).join(""); }
+
+function cellHTML(f, opts) {
+  const cls = ["cell"];
+  if (f.rating === -1) cls.push("rej");
+  if (opts.stacked) cls.push("stacked");
+  if (opts.ingroup) cls.push("ingroup"), opts.alt && cls.push("alt");
+  if (f.id === cur) cls.push("cur");
+  const stack = opts.count > 1
+    ? `<span class="b tr"><span class="stack" data-stack="${f.group}" title="${opts.stacked ? "Expand" : "Collapse"} stack (e)">${opts.stacked ? "⧉ " + opts.count : "⧉ " + opts.idx + "/" + opts.count}</span></span>` : "";
+  return `<div class="${cls.join(" ")}" data-id="${f.id}">
+    <img loading="lazy" decoding="async" src="/thumb/${encodeURIComponent(f.id)}.jpg" alt="">
+    <span class="b tl">${labelsHTML(f)}</span>${stack}
+    <span class="b bl">${marksHTML(f)}</span>
+    <div class="hov"><span class="n">${f.name}</span> · ${fmtTime(f.ts)}<br>${shortExif(f.exif)}${f.exif.LensModel ? "<br>" + f.exif.LensModel : ""}</div>
+  </div>`;
+}
+
+function render() {
+  visible = [];
+  const sections = new Map();
+  let alt = false;
+  for (const [gid, members] of groups) {
+    const folder = members[0].folder;
+    if (!sections.has(folder)) sections.set(folder, { html: [], n: 0, stacks: 0, total: 0 });
+    const sec = sections.get(folder);
+    sec.total += members.length;
+    const pass = members.filter(passes);
+    if (!pass.length) continue;
+    sec.stacks++; sec.n += pass.length;
+    if (folded.has(folder)) continue;
+    if (pass.length > 1 && isExpanded(gid)) {
+      alt = !alt;
+      pass.forEach((f, i) => { sec.html.push(cellHTML(f, { ingroup: true, alt, count: pass.length, idx: i + 1 })); visible.push(f.id); });
+    } else {
+      const f = pass[0];
+      sec.html.push(cellHTML(f, { stacked: pass.length > 1, count: pass.length }));
+      visible.push(f.id);
+    }
+  }
+  const main = $("#main");
+  const filtered = filterActive();
+  main.innerHTML = [...sections].map(([folder, s]) => {
+    const fold = folded.has(folder);
+    const count = filtered ? `${s.n} of ${s.total} frames` : `${s.n} frames`;
+    const body = fold ? "" : s.n ? `<div class="grid">${s.html.join("")}</div>` : '<div class="empty">Nothing in this shoot matches the filter.</div>';
+    return `<section class="${fold ? "folded" : ""}"><h2 data-fold="${folder.replace(/"/g, "&quot;")}" title="Click to ${fold ? "unfold" : "fold"} · Alt+click folds the others"><span class="car">▾</span>${folder} <span>${count} · ${s.stacks} stacks${fold ? " · folded" : ""}</span></h2>${body}</section>`;
+  }).join("");
+  $("#foldAll").textContent = folded.size >= sections.size ? "unfold all" : "fold all";
+  if (!visible.includes(cur)) cur = visible[0] ?? null;
+  highlight(false);
+  stats();
+}
+
+function stats() {
+  renderFilters();
+  let rated = 0, rej = 0, red = 0, green = 0, un = 0;
+  for (const f of frames) {
+    if (f.rating > 0) rated++; else if (f.rating === -1) rej++; else un++;
+    if (f.labels.includes(0)) red++;
+    if (f.labels.includes(2)) green++;
+  }
+  $("#stats").innerHTML = `<span><b>${frames.length}</b> frames</span><span><b>${groups.size}</b> stacks</span>
+    <span><b>${un}</b> unrated</span><span style="color:var(--star)"><b>${rated}</b> ★</span>
+    <span style="color:var(--red)"><b>${rej}</b> ✕</span>
+    <span style="color:var(--red)"><b>${red}</b> ●</span><span style="color:var(--green)"><b>${green}</b> ●</span>`;
+}
+
+const cellEl = (id) => id && document.querySelector(`.cell[data-id="${CSS.escape(id)}"]`);
+
+function highlight(scroll = true) {
+  document.querySelectorAll(".cell.cur").forEach((e) => e.classList.remove("cur"));
+  const el = cellEl(cur);
+  if (el) { el.classList.add("cur"); if (scroll && !fsOpen) el.scrollIntoView({ block: "nearest" }); }
+}
+
+function refreshCell(f) {
+  const el = cellEl(f.id);
+  if (!el) return;
+  el.classList.toggle("rej", f.rating === -1);
+  el.querySelector(".b.tl").innerHTML = labelsHTML(f);
+  el.querySelector(".b.bl").innerHTML = marksHTML(f);
+}
+
+// ---------------------------------------------------------------- marking
+async function apply(id, rating, labels, record = true) {
+  const f = byId.get(id);
+  const prev = { rating: f.rating, labels: f.labels.slice() };
+  if (prev.rating === rating && prev.labels.join() === labels.join()) return;
+  f.rating = rating; f.labels = labels;
+  refreshCell(f); stats(); if (fsOpen && cur === id) fsInfo();
+  if (record) { undoStack.push({ id, prev, next: { rating, labels } }); redoStack = []; }
+  persist(id);
+}
+
+// Writes go out one at a time and each sends the frame's state *at send
+// time*. Two in flight at once (say a rating then a label) could land out of
+// order, leaving the sidecar with the older full state.
+let writeQ = Promise.resolve();
+function persist(id) {
+  writeQ = writeQ.then(async () => {
+    const f = byId.get(id);
+    const want = { rating: f.rating, labels: f.labels.slice() };
+    if (want.rating === f.saved.rating && want.labels.join() === f.saved.labels.join()) return;
+    try {
+      const r = await fetch("/api/mark", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...want }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.status);
+      f.saved = { rating: j.rating, labels: j.labels };
+    } catch (e) {
+      f.rating = f.saved.rating; f.labels = f.saved.labels.slice();
+      refreshCell(f); stats(); if (fsOpen && cur === id) fsInfo();
+      toast(`Couldn't write ${f.name}.xmp — reverted: ${e.message}`, true);
+    }
+  });
+}
+window.addEventListener("beforeunload", (e) => {
+  if (frames.some((f) => f.rating !== f.saved.rating || f.labels.join() !== f.saved.labels.join())) e.preventDefault();
+});
+
+function mark(kind) {
+  if (!cur) return;
+  const f = byId.get(cur);
+  let rating = f.rating, labels = f.labels.slice();
+  if (kind === "rej") rating = f.rating === -1 ? 0 : -1;
+  else if (/^r\d$/.test(kind)) rating = +kind[1];
+  else if (kind === "red") labels = [LABEL.red];
+  else if (kind === "green") labels = [LABEL.green];
+  else if (kind === "nolabel") labels = [];
+  apply(cur, rating, labels);
+  if ((kind === "rej" || /^r\d$/.test(kind)) && $("#advance").checked) move(1);
+}
+
+function undo(redo = false) {
+  const from = redo ? redoStack : undoStack, to = redo ? undoStack : redoStack;
+  const op = from.pop();
+  if (!op) return toast(redo ? "Nothing to redo" : "Nothing to undo");
+  to.push(op);
+  const s = redo ? op.next : op.prev;
+  apply(op.id, s.rating, s.labels.slice(), false);
+  if (visible.includes(op.id)) { cur = op.id; fsOpen ? fsShow() : highlight(); }
+  toast(`${redo ? "Redid" : "Undid"} ${byId.get(op.id).name}`);
+}
+
+// ---------------------------------------------------------------- navigation
+function move(d) {
+  if (!visible.length) return;
+  const i = Math.max(0, visible.indexOf(cur));
+  cur = visible[Math.min(visible.length - 1, Math.max(0, i + d))];
+  fsOpen ? fsShow() : highlight();
+}
+
+function moveVert(dir) {
+  const el = cellEl(cur);
+  if (!el) return;
+  const r = el.getBoundingClientRect(), cx = r.left + r.width / 2;
+  const cand = [...document.querySelectorAll(".cell")]
+    .map((c) => ({ c, q: c.getBoundingClientRect() }))
+    .filter(({ q }) => (dir < 0 ? q.top < r.top - 4 : q.top > r.top + 4));
+  if (!cand.length) return;
+  const rowTop = dir < 0 ? Math.max(...cand.map((x) => x.q.top)) : Math.min(...cand.map((x) => x.q.top));
+  const row = cand.filter(({ q }) => Math.abs(q.top - rowTop) <= 4);
+  row.sort((a, b) => Math.abs(a.q.left + a.q.width / 2 - cx) - Math.abs(b.q.left + b.q.width / 2 - cx));
+  cur = row[0].c.dataset.id; highlight();
+}
+
+function toggleStack(gid) {
+  if ($("#expandAll").checked) { $("#expandAll").checked = false; store.set("expandAll", false); expanded = new Set(groups.keys()); }
+  expanded.has(gid) ? expanded.delete(gid) : expanded.add(gid);
+  if (!expanded.has(gid) && cur && byId.get(cur).group === gid) {
+    cur = groups.get(gid).find(passes)?.id ?? cur;
+  }
+  render();
+  fsOpen ? fsShow() : highlight();
+}
+
+// ---------------------------------------------------------------- fullscreen
+const stage = $("#stage"), fsimg = $("#fsimg");
+let loadToken = 0;
+const preloaded = new Map();
+
+function preload(id) {
+  if (!id || preloaded.has(id)) return;
+  const im = new Image(); im.decoding = "async"; im.src = `/full/${encodeURIComponent(id)}.jpg`;
+  preloaded.set(id, im);
+  if (preloaded.size > 8) preloaded.delete(preloaded.keys().next().value);
+}
+
+function fsOpenAt(id) {
+  if (!id) return;
+  cur = id; fsOpen = true; $("#fs").hidden = false;
+  document.body.style.overflow = "hidden";
+  fsShow();
+}
+function fsClose() {
+  fsOpen = false; setZoom(false); $("#fs").hidden = true; document.body.style.overflow = "";
+  highlight();
+}
+
+function fsShow() {
+  const f = byId.get(cur);
+  if (!f) return;
+  const tok = ++loadToken;
+  setZoom(false);
+  fsimg.src = `/thumb/${encodeURIComponent(f.id)}.jpg`;
+  $("#spin").hidden = false;
+  const full = new Image();
+  full.onload = () => { if (tok === loadToken) { fsimg.src = full.src; $("#spin").hidden = true; } };
+  full.onerror = () => { if (tok === loadToken) { $("#spin").textContent = "full size failed to load"; } };
+  full.src = `/full/${encodeURIComponent(f.id)}.jpg`;
+  const i = visible.indexOf(cur);
+  preload(visible[i + 1]); preload(visible[i - 1]); preload(visible[i + 2]);
+  fsInfo();
+  highlight(false);
+}
+
+function fsInfo() {
+  const f = byId.get(cur);
+  const i = visible.indexOf(cur), members = groups.get(f.group);
+  const e = f.exif;
+  const rows = [["Time", f.ts ? f.ts.replace("T", " ").slice(0, 22) : "—"], ["Camera", e.Model], ["Lens", e.LensModel],
+    ["Focal", e.FocalLength], ["Aperture", e.FNumber && "f/" + e.FNumber], ["Shutter", e.ExposureTime && e.ExposureTime + " s"],
+    ["ISO", e.ISO], ["Exp. comp.", e.ExposureCompensation], ["Program", e.ExposureProgram], ["Metering", e.MeteringMode],
+    ["Flash", e.Flash], ["WB", e.WhiteBalance], ["Focus", e.FocusMode], ["AF area", e.AFAreaMode], ["Size", e.ImageSize],
+    ["Files", [f.raw && "RAW", f.jpg && "JPEG"].filter(Boolean).join(" + ") + (f.jpg ? "" : " (embedded preview)")]];
+  const mk = f.rating === -1 ? '<span class="rejx">✕ rejected</span>'
+    : f.rating > 0 ? `<span class="stars">${"★".repeat(f.rating)}${"☆".repeat(5 - f.rating)}</span>` : '<span style="color:var(--faint)">unrated</span>';
+  $("#info").innerHTML = `<h3>${f.name}</h3><div class="sub">${f.folder}${members.length > 1 ? ` · stack of ${members.length} (#${members.indexOf(f) + 1})` : ""}</div>
+    <div class="mark">${mk} ${labelsHTML(f)}</div>
+    <dl>${rows.filter((r) => r[1]).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  $("#pos").textContent = `${i + 1} / ${visible.length}`;
+  document.querySelectorAll("#fsbar [data-act]").forEach((b) => {
+    const a = b.dataset.act;
+    b.classList.toggle("on", (a === "rej" && f.rating === -1) || (a[0] === "r" && a.length === 2 && +a[1] === f.rating && f.rating > 0)
+      || (a === "red" && f.labels.includes(0)) || (a === "green" && f.labels.includes(2)) || (a === "zoom" && zoomed));
+  });
+}
+
+function setZoom(on, cx, cy) {
+  if (on === zoomed) return;
+  if (on) {
+    const r = fsimg.getBoundingClientRect();
+    const rx = cx === undefined ? 0.5 : Math.min(1, Math.max(0, (cx - r.left) / r.width));
+    const ry = cy === undefined ? 0.5 : Math.min(1, Math.max(0, (cy - r.top) / r.height));
+    const dpr = window.devicePixelRatio || 1;
+    const w = fsimg.naturalWidth / dpr, h = fsimg.naturalHeight / dpr;
+    zoomed = true; stage.classList.add("zoom");
+    fsimg.style.width = w + "px"; fsimg.style.height = h + "px";
+    const sr = stage.getBoundingClientRect();
+    const ox = cx === undefined ? sr.width / 2 : cx - sr.left, oy = cy === undefined ? sr.height / 2 : cy - sr.top;
+    stage.scrollLeft = rx * w - ox; stage.scrollTop = ry * h - oy;
+  } else {
+    zoomed = false; stage.classList.remove("zoom", "drag");
+    fsimg.style.width = fsimg.style.height = "";
+  }
+  if (fsOpen) document.querySelector('#fsbar [data-act="zoom"]').classList.toggle("on", zoomed);
+}
+
+let drag = null;
+stage.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  drag = { x: e.clientX, y: e.clientY, sl: stage.scrollLeft, st: stage.scrollTop, moved: false };
+  if (zoomed) { stage.classList.add("drag"); stage.setPointerCapture(e.pointerId); }
+});
+stage.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+  if (zoomed) { stage.scrollLeft = drag.sl - dx; stage.scrollTop = drag.st - dy; }
+});
+stage.addEventListener("pointerup", (e) => {
+  if (!drag) return;
+  const d = drag; drag = null; stage.classList.remove("drag");
+  if (!d.moved) setZoom(!zoomed, e.clientX, e.clientY);
+});
+
+$("#fsbar").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-act]")?.dataset.act;
+  if (!a) return;
+  if (a === "prev") move(-1); else if (a === "next") move(1);
+  else if (a === "close") fsClose(); else if (a === "undo") undo();
+  else if (a === "zoom") setZoom(!zoomed);
+  else if (a === "info") $("#fs").classList.toggle("noinfo");
+  else mark(a);
+});
+
+// ---------------------------------------------------------------- grid events
+$("#main").addEventListener("click", (e) => {
+  const h = e.target.closest("[data-fold]");
+  if (h) { toggleFold(h.dataset.fold, e.altKey); return; }
+  const s = e.target.closest("[data-stack]");
+  if (s) { e.stopPropagation(); cur = e.target.closest(".cell").dataset.id; toggleStack(+s.dataset.stack); return; }
+  const c = e.target.closest(".cell");
+  if (c) fsOpenAt(c.dataset.id);
+});
+document.addEventListener("mousemove", () => { mouseMoved = true; }, { passive: true });
+$("#main").addEventListener("mouseover", (e) => {
+  if (!mouseMoved) return;
+  const c = e.target.closest(".cell");
+  if (c && c.dataset.id !== cur) { cur = c.dataset.id; highlight(false); }
+});
+
+$("#chips").addEventListener("click", (e) => {
+  if (e.target.closest("#clearF")) { clearFilters(); return; }
+  const b = e.target.closest("[data-chip]");
+  if (!b) return;
+  const k = b.dataset.chip, s = filt[k];
+  setChip(k, !s ? 1 : s === 1 ? -1 : 0);
+});
+$("#chips").addEventListener("contextmenu", (e) => {
+  const b = e.target.closest("[data-chip]");
+  if (!b) return;
+  e.preventDefault();
+  setChip(b.dataset.chip, filt[b.dataset.chip] === -1 ? 0 : -1);
+});
+
+// Rating strip: press on a value, drag across neighbours, release to apply.
+// The value under the pointer comes from x alone, clamped to the strip, so a
+// drag that drifts off the strip still extends to the end value.
+const rateEl = $("#rate");
+let rdrag = null;
+function rateAt(x) {
+  const cells = [...rateEl.children];
+  for (const c of cells) { const q = c.getBoundingClientRect(); if (x < q.right) return +c.dataset.v; }
+  return +cells[cells.length - 1].dataset.v;
+}
+rateEl.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const v = rateAt(e.clientX);
+  rdrag = { a: v };
+  rateEl.setPointerCapture(e.pointerId);
+  setRange(v, v, false);
+});
+rateEl.addEventListener("pointermove", (e) => {
+  if (!rdrag) return;
+  const v = rateAt(e.clientX);
+  setRange(Math.min(rdrag.a, v), Math.max(rdrag.a, v), false);
+});
+const endRateDrag = () => {
+  if (!rdrag) return;
+  rdrag = null;
+  setRange(range[0], range[1], true);
+};
+rateEl.addEventListener("pointerup", endRateDrag);
+rateEl.addEventListener("pointercancel", endRateDrag);
+rateEl.addEventListener("dblclick", () => setRange(RMIN, RMAX, true));
+$("#foldAll").addEventListener("click", (e) => {
+  const all = [...new Set(frames.map((f) => f.folder))];
+  folded = folded.size >= all.length ? new Set() : new Set(all);
+  store.set("folded", [...folded]); e.target.blur(); render();
+});
+$("#expandAll").addEventListener("change", (e) => { store.set("expandAll", e.target.checked); expanded.clear(); e.target.blur(); render(); });
+$("#advance").addEventListener("change", (e) => { store.set("advance", e.target.checked); e.target.blur(); });
+$("#size").addEventListener("input", (e) => { document.documentElement.style.setProperty("--thumb", e.target.value + "px"); store.set("size", +e.target.value); });
+$("#helpBtn").addEventListener("click", () => ($("#help").hidden = false));
+$("#help").addEventListener("click", () => ($("#help").hidden = true));
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input[type=text], select")) return;
+  const k = e.key, mod = e.ctrlKey || e.metaKey;
+  if (!$("#help").hidden) { if (k === "Escape" || k === "?") $("#help").hidden = true; e.preventDefault(); return; }
+  if (mod && (k === "z" || k === "Z")) { e.preventDefault(); return undo(e.shiftKey); }
+  if (mod && k === "y") { e.preventDefault(); return undo(true); }
+  if (mod || e.altKey) return;
+  mouseMoved = false;
+  const handled = () => e.preventDefault();
+  switch (k) {
+    case "r": case "R": mark("rej"); return handled();
+    case "0": case "1": case "2": case "3": case "4": case "5": mark("r" + k); return handled();
+    case "d": mark("red"); return handled();
+    case "f": mark("green"); return handled();
+    case "g": mark("nolabel"); return handled();
+    case "ArrowRight": case "l": move(1); return handled();
+    case "ArrowLeft": case "h": move(-1); return handled();
+    case "ArrowDown": case "j": fsOpen ? move(1) : moveVert(1); return handled();
+    case "ArrowUp": case "k": fsOpen ? move(-1) : moveVert(-1); return handled();
+    case "Home": cur = visible[0]; fsOpen ? fsShow() : highlight(); return handled();
+    case "End": cur = visible[visible.length - 1]; fsOpen ? fsShow() : highlight(); return handled();
+    case " ": case "Enter": fsOpen ? (k === " " ? move(1) : fsClose()) : fsOpenAt(cur); return handled();
+    case "Escape": if (fsOpen) fsClose(); return handled();
+    case "z": if (fsOpen) setZoom(!zoomed); return handled();
+    case "i": if (fsOpen) $("#fs").classList.toggle("noinfo"); return handled();
+    case "e": if (cur) toggleStack(byId.get(cur).group); return handled();
+    case "E": $("#expandAll").checked = !$("#expandAll").checked; $("#expandAll").dispatchEvent(new Event("change")); return handled();
+    case "?": $("#help").hidden = false; return handled();
+    case "x": if (filterActive()) clearFilters(); return handled();
+  }
+});
+
+load().catch((e) => toast("Failed to load: " + e.message, true));
+</script>
+</body>
+</html>

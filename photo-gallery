@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""photo-gallery — keyboard culling gallery for shoots, served over HTTP.
+
+    photo-gallery ~/Pictures/2026-10-02-hike ~/Pictures/2026-10-03-hike
+    photo-gallery --host tailscale        # shoots from ~/.config/photo-gallery/shoots
+
+Shows each frame once: the camera JPEG when there is one, else the RAW's
+embedded preview. Near-identical bursts collapse into one stacked tile.
+Ratings, rejects and colour labels are written to darktable XMP sidecars
+next to the RAW (or the JPEG for JPEG-only frames), so darktable picks them
+up on import. Existing sidecars are edited in place — history is preserved.
+Sidecars changed on disk by something else (darktable, a cull script) are
+re-read when the page loads.
+
+With no folders on the command line, the shoots file lists one folder per
+line (# comments allowed). Missing folders are skipped with a warning; if
+none exist (the photo mount is down) it exits non-zero so systemd retries.
+
+Needs exiftool and vipsthumbnail on PATH, plus Pillow.
+"""
+import argparse
+import hashlib
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
+
+from PIL import Image
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SHOOTS_FILE = os.path.expanduser("~/.config/photo-gallery/shoots")
+RAW_EXTS = {".arw", ".nef", ".dng", ".cr2", ".cr3", ".raf", ".orf", ".rw2"}
+JPG_EXTS = {".jpg", ".jpeg"}
+THUMB = 480
+
+# Burst grouping: consecutive frames (in capture order) within GAP seconds
+# whose dHashes differ by at most HAM bits join the same stack.
+GAP = 4.0
+HAM = 12
+
+EXIF_TAGS = [
+    "DateTimeOriginal", "SubSecTimeOriginal", "Model", "LensModel",
+    "FocalLength", "FNumber", "ExposureTime", "ISO", "ExposureCompensation",
+    "ExposureProgram", "MeteringMode", "Flash", "WhiteBalance", "FocusMode",
+    "AFAreaMode", "ImageSize",
+]
+
+# darktable colour label indices
+RED, GREEN = 0, 2
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+# ---------------------------------------------------------------- indexing
+
+def scan_dir(d):
+    """{stem: {"jpg": path, "raw": path}} for one shoot folder."""
+    stems = {}
+    for n in sorted(os.listdir(d)):
+        stem, ext = os.path.splitext(n)
+        ext = ext.lower()
+        kind = "raw" if ext in RAW_EXTS else "jpg" if ext in JPG_EXTS else None
+        if kind:
+            stems.setdefault(stem, {})[kind] = os.path.join(d, n)
+    return stems
+
+
+def read_exif(paths):
+    out = {}
+    for i in range(0, len(paths), 400):
+        res = subprocess.run(
+            ["exiftool", "-json", "-q", "-m", *("-" + t for t in EXIF_TAGS),
+             "-Orientation#", *paths[i:i + 400]],
+            capture_output=True, text=True)
+        try:
+            for row in json.loads(res.stdout or "[]"):
+                out[row["SourceFile"]] = row
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def capture_ts(ex):
+    d = str(ex.get("DateTimeOriginal", ""))
+    try:
+        t = datetime.strptime(d[:19], "%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return None
+    sub = str(ex.get("SubSecTimeOriginal", ""))
+    if sub.isdigit():
+        t += timedelta(seconds=int(sub.ljust(3, "0")[:3]) / 1000)
+    return t
+
+
+def dhash(path, size=8):
+    with Image.open(path) as im:
+        g = im.convert("L").resize((size + 1, size), Image.LANCZOS)
+        px = g.tobytes()
+    bits = 0
+    for r in range(size):
+        for c in range(size):
+            bits = (bits << 1) | (px[r * (size + 1) + c + 1]
+                                  > px[r * (size + 1) + c])
+    return bits
+
+
+def prep_frame(f, cache):
+    """Make the thumbnail (and for RAW-only frames the full preview)."""
+    thumb = os.path.join(cache, "thumb", f["stem"] + ".jpg")
+    f["thumb"] = thumb
+    src = f["src"]
+    if f["preview"]:
+        prev = os.path.join(cache, "preview", f["stem"] + ".jpg")
+        if not os.path.exists(prev):
+            with open(prev + ".tmp", "wb") as fh:
+                subprocess.run(["exiftool", "-b", "-PreviewImage", src],
+                               stdout=fh, check=True)
+            # The Orientation tag lives on the RAW, not in the preview bytes.
+            subprocess.run(["exiftool", "-q", "-overwrite_original",
+                            "-tagsfromfile", src, "-Orientation",
+                            prev + ".tmp"], check=False)
+            os.replace(prev + ".tmp", prev)
+        src = prev
+        f["full"] = prev
+    if not os.path.exists(thumb):
+        subprocess.run(["vipsthumbnail", src, "--size", f"{THUMB}x{THUMB}",
+                        "-o", thumb + "[Q=82,strip]"], check=True)
+    f["dhash"] = dhash(thumb)
+
+
+def dir_cache(root, d):
+    """Per-shoot cache, so adding a shoot never rebuilds the others."""
+    c = os.path.join(root, hashlib.sha1(d.encode()).hexdigest()[:12])
+    for sub in ("thumb", "preview"):
+        os.makedirs(os.path.join(c, sub), exist_ok=True)
+    return c
+
+
+def build(dirs, cache_root):
+    frames = []
+    for di, d in enumerate(dirs):
+        folder = os.path.basename(d.rstrip("/"))
+        cache = dir_cache(cache_root, d)
+        stems = scan_dir(d)
+        log(f"{folder}: {len(stems)} frames")
+        for stem, kinds in stems.items():
+            jpg, raw = kinds.get("jpg"), kinds.get("raw")
+            frames.append({
+                "id": f"{di}-{stem}",
+                "stem": stem,
+                "folder": folder,
+                "cache": cache,
+                "src": jpg or raw,
+                "full": jpg or raw,
+                "preview": jpg is None,
+                "raw": raw,
+                "jpg": jpg,
+                "xmp": (raw or jpg) + ".xmp",
+            })
+
+    log("reading EXIF ...")
+    exif = read_exif([f["src"] for f in frames])
+    for f in frames:
+        f["exif"] = exif.get(f["src"], {})
+
+    log("making thumbnails ...")
+    done = [0]
+
+    def work(f):
+        prep_frame(f, f["cache"])
+        done[0] += 1
+        if done[0] % 200 == 0:
+            log(f"  {done[0]}/{len(frames)}")
+
+    with ThreadPoolExecutor(os.cpu_count() or 8) as ex:
+        list(ex.map(work, frames))
+
+    for f in frames:
+        f["ts"] = capture_ts(f["exif"])
+    frames.sort(key=lambda f: (f["ts"] or datetime.max, f["folder"], f["stem"]))
+
+    gid = -1
+    prev = None
+    for f in frames:
+        if (prev is None or f["ts"] is None or prev["ts"] is None
+                or (f["ts"] - prev["ts"]).total_seconds() > GAP
+                or bin(f["dhash"] ^ prev["dhash"]).count("1") > HAM):
+            gid += 1
+        f["group"] = gid
+        prev = f
+    return frames
+
+
+# ---------------------------------------------------------------- XMP
+
+RE_RATING_ATTR = re.compile(r'xmp:Rating="(-?\d+)"')
+RE_RATING_EL = re.compile(r"<xmp:Rating>(-?\d+)</xmp:Rating>")
+RE_LABELS = re.compile(
+    r"[ \t]*<darktable:colorlabels>.*?</darktable:colorlabels>\n?", re.S)
+RE_DESC_OPEN = re.compile(r"<rdf:Description\b[^>]*?(/?)>", re.S)
+
+TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 4.4.0-Exiv2">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+    xmlns:darktable="http://darktable.sf.net/"
+   xmpMM:DerivedFrom={derived}
+   xmp:Rating="0">
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+"""
+
+
+def read_xmp(path):
+    try:
+        s = open(path, encoding="utf-8").read()
+    except OSError:
+        return 0, []
+    m = RE_RATING_ATTR.search(s) or RE_RATING_EL.search(s)
+    rating = int(m.group(1)) if m else 0
+    lm = re.search(r"<darktable:colorlabels>(.*?)</darktable:colorlabels>",
+                   s, re.S)
+    labels = sorted({int(x) for x in re.findall(r"<rdf:li>(\d+)</rdf:li>",
+                                                lm.group(1))}) if lm else []
+    return rating, labels
+
+
+def write_xmp(path, image_name, rating, labels):
+    try:
+        s = open(path, encoding="utf-8").read()
+    except FileNotFoundError:
+        s = TEMPLATE.format(derived=json.dumps(image_name))
+
+    m = RE_DESC_OPEN.search(s)
+    if not m:
+        raise ValueError(f"{path}: no rdf:Description")
+    if m.group(1):  # self-closing <rdf:Description ... /> -> open/close pair
+        tag = m.group(0)[:-2].rstrip() + ">"
+        s = s[:m.start()] + tag + "\n  </rdf:Description>" + s[m.end():]
+        m = RE_DESC_OPEN.search(s)
+    if "xmlns:darktable=" not in s:
+        tag = m.group(0)
+        tag = tag[:-1] + '\n    xmlns:darktable="http://darktable.sf.net/">'
+        s = s[:m.start()] + tag + s[m.end():]
+        m = RE_DESC_OPEN.search(s)
+    if "xmlns:xmp=" not in s:
+        tag = m.group(0)
+        tag = tag[:-1] + '\n    xmlns:xmp="http://ns.adobe.com/xap/1.0/">'
+        s = s[:m.start()] + tag + s[m.end():]
+        m = RE_DESC_OPEN.search(s)
+
+    if RE_RATING_ATTR.search(s):
+        s = RE_RATING_ATTR.sub(f'xmp:Rating="{rating}"', s, count=1)
+    elif RE_RATING_EL.search(s):
+        s = RE_RATING_EL.sub(f"<xmp:Rating>{rating}</xmp:Rating>", s, count=1)
+    else:
+        tag = m.group(0)[:-1] + f'\n   xmp:Rating="{rating}">'
+        s = s[:m.start()] + tag + s[m.end():]
+        m = RE_DESC_OPEN.search(s)
+
+    s = RE_LABELS.sub("", s)
+    if labels:
+        items = "".join(f"     <rdf:li>{n}</rdf:li>\n" for n in labels)
+        block = ("\n   <darktable:colorlabels>\n    <rdf:Seq>\n" + items
+                 + "    </rdf:Seq>\n   </darktable:colorlabels>")
+        m = RE_DESC_OPEN.search(s)
+        s = s[:m.end()] + block + s[m.end():]
+
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(s)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------- server
+
+def fmt_exif(ex):
+    def g(k):
+        v = ex.get(k)
+        return "" if v in (None, "", "Unknown") else str(v)
+    out = {k: g(k) for k in EXIF_TAGS if g(k)}
+    out.pop("SubSecTimeOriginal", None)
+    return out
+
+
+class App:
+    def __init__(self, frames):
+        self.frames = {f["id"]: f for f in frames}
+        self.order = [f["id"] for f in frames]
+        self.lock = threading.Lock()
+        for f in frames:
+            f["xmp_mtime"] = xmp_mtime(f["xmp"])
+            f["rating"], f["labels"] = read_xmp(f["xmp"])
+
+    def refresh(self):
+        """Pick up sidecars that changed on disk since we last read them."""
+        with self.lock:
+            for f in self.frames.values():
+                m = xmp_mtime(f["xmp"])
+                if m != f["xmp_mtime"]:
+                    f["xmp_mtime"] = m
+                    f["rating"], f["labels"] = read_xmp(f["xmp"])
+
+    def payload(self):
+        self.refresh()
+        out = []
+        for fid in self.order:
+            f = self.frames[fid]
+            ex = f["exif"]
+            out.append({
+                "id": fid,
+                "name": f["stem"],
+                "folder": f["folder"],
+                "group": f["group"],
+                "ts": f["ts"].isoformat() if f["ts"] else None,
+                "raw": bool(f["raw"]),
+                "jpg": bool(f["jpg"]),
+                "portrait": int(ex.get("Orientation") or 1) in (5, 6, 7, 8),
+                "exif": fmt_exif(ex),
+                "rating": f["rating"],
+                "labels": f["labels"],
+            })
+        return out
+
+    def mark(self, fid, rating, labels):
+        f = self.frames[fid]
+        rating = max(-1, min(5, int(rating)))
+        labels = sorted({int(x) for x in labels if 0 <= int(x) <= 4})
+        with self.lock:
+            name = os.path.basename(f["raw"] or f["jpg"])
+            write_xmp(f["xmp"], name, rating, labels)
+            f["xmp_mtime"] = xmp_mtime(f["xmp"])
+            f["rating"], f["labels"] = rating, labels
+        return {"id": fid, "rating": rating, "labels": labels}
+
+
+def xmp_mtime(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        return None
+
+
+def make_handler(app, title):
+    def page():
+        # Read per request so edits to the page show up on reload.
+        with open(os.path.join(HERE, "gallery.html"), encoding="utf-8") as fh:
+            return fh.read().replace("__TITLE__", html.escape(title))
+
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def send(self, code, body, ctype, extra=None):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_file(self, path):
+            try:
+                st = os.stat(path)
+                etag = f'"{int(st.st_mtime)}-{st.st_size}"'
+                if self.headers.get("If-None-Match") == etag:
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(st.st_size))
+                self.send_header("Cache-Control", "private, max-age=86400")
+                self.send_header("ETag", etag)
+                self.end_headers()
+                with open(path, "rb") as fh:
+                    shutil.copyfileobj(fh, self.wfile, 1 << 20)
+            except FileNotFoundError:
+                self.send(404, b"not found", "text/plain")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def do_GET(self):
+            p = unquote(self.path.split("?", 1)[0])
+            if p == "/":
+                self.send(200, page().encode(), "text/html; charset=utf-8",
+                          {"Cache-Control": "no-store"})
+            elif p == "/api/frames":
+                body = json.dumps({"title": title,
+                                   "frames": app.payload()}).encode()
+                self.send(200, body, "application/json",
+                          {"Cache-Control": "no-store"})
+            elif p.startswith("/thumb/"):
+                fid = p[7:].removesuffix(".jpg")
+                if fid in app.frames:
+                    self.send_file(app.frames[fid]["thumb"])
+                else:
+                    self.send(404, b"not found", "text/plain")
+            elif p.startswith("/full/"):
+                fid = p[6:].removesuffix(".jpg")
+                if fid in app.frames:
+                    self.send_file(app.frames[fid]["full"])
+                else:
+                    self.send(404, b"not found", "text/plain")
+            else:
+                self.send(404, b"not found", "text/plain")
+
+        def do_POST(self):
+            if self.path != "/api/mark":
+                return self.send(404, b"not found", "text/plain")
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                req = json.loads(self.rfile.read(n))
+                res = app.mark(req["id"], req["rating"], req["labels"])
+                self.send(200, json.dumps(res).encode(), "application/json")
+            except Exception as e:  # surface every failure to the UI
+                self.send(500, json.dumps({"error": str(e)}).encode(),
+                          "application/json")
+
+    return H
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="photo-gallery", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("dirs", nargs="*",
+                    help="shoot folder(s); default: the lines of --shoots")
+    ap.add_argument("--shoots", default=SHOOTS_FILE,
+                    help="file listing shoot folders, one per line")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address, or `tailscale` for this machine's tailnet IPv4")
+    ap.add_argument("--port", type=int, default=19000)
+    ap.add_argument("--title", help="page title (default: folder names)")
+    ap.add_argument("--cache", default=os.path.expanduser(
+        "~/.cache/photo-gallery"))
+    a = ap.parse_args()
+
+    for t in ("exiftool", "vipsthumbnail"):
+        if not shutil.which(t):
+            sys.exit(f"`{t}` not found on PATH")
+    if a.dirs:
+        wanted = a.dirs
+    else:
+        try:
+            lines = open(a.shoots, encoding="utf-8").read().splitlines()
+        except FileNotFoundError:
+            sys.exit(f"no folders given and no shoots file at {a.shoots}")
+        wanted = [ln.strip() for ln in lines
+                  if ln.strip() and not ln.lstrip().startswith("#")]
+    dirs = []
+    for d in wanted:
+        d = os.path.abspath(os.path.expanduser(d))
+        if os.path.isdir(d):
+            dirs.append(d)
+        else:
+            log(f"skipping, not a directory: {d}")
+    if not dirs:
+        sys.exit("no shoot folders available")
+
+    host = a.host
+    if host == "tailscale":
+        res = subprocess.run(["tailscale", "ip", "-4"],
+                             capture_output=True, text=True)
+        ips = res.stdout.split() if res.returncode == 0 else []
+        host = ips[0] if ips else None
+        if not host:
+            sys.exit("tailscale has no IPv4 address yet")
+
+    t0 = time.time()
+    frames = build(dirs, a.cache)
+    ngroups = len({f["group"] for f in frames})
+    log(f"{len(frames)} frames in {ngroups} stacks  ({time.time() - t0:.0f}s)")
+
+    title = a.title or " + ".join(os.path.basename(d) for d in dirs)
+    app = App(frames)
+    srv = ThreadingHTTPServer((host, a.port), make_handler(app, title))
+    log(f"serving http://{host}:{a.port}/")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
