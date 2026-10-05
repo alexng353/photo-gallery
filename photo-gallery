@@ -91,6 +91,47 @@ def read_exif(paths):
     return out
 
 
+def cached_exif(frames):
+    """EXIF per frame, cached per shoot keyed on (size, mtime).
+
+    Reading EXIF for a thousand files over a network mount takes minutes;
+    stat-ing them takes a second, so only new or changed files hit exiftool.
+    """
+    by_cache = {}
+    for f in frames:
+        by_cache.setdefault(f["cache"], []).append(f)
+    for cache, group in by_cache.items():
+        path = os.path.join(cache, "exif.json")
+        try:
+            old = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
+            old = {}
+        new, miss = {}, []
+        for f in group:
+            name = os.path.basename(f["src"])
+            try:
+                st = os.stat(f["src"])
+                key = [st.st_size, st.st_mtime_ns]
+            except OSError:
+                key = None
+            hit = old.get(name)
+            if key and hit and hit.get("key") == key:
+                new[name] = hit
+                f["exif"] = hit["exif"]
+            else:
+                miss.append((f, name, key))
+        if miss:
+            got = read_exif([f["src"] for f, _, _ in miss])
+            for f, name, key in miss:
+                f["exif"] = got.get(f["src"], {})
+                if key and f["exif"]:
+                    new[name] = {"key": key, "exif": f["exif"]}
+        if new != old:
+            with open(path + ".tmp", "w", encoding="utf-8") as fh:
+                json.dump(new, fh)
+            os.replace(path + ".tmp", path)
+
+
 def capture_ts(ex):
     d = str(ex.get("DateTimeOriginal", ""))
     try:
@@ -170,9 +211,7 @@ def build(dirs, cache_root):
             })
 
     log("reading EXIF ...")
-    exif = read_exif([f["src"] for f in frames])
-    for f in frames:
-        f["exif"] = exif.get(f["src"], {})
+    cached_exif(frames)
 
     log("making thumbnails ...")
     done = [0]

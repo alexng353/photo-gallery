@@ -33,8 +33,10 @@ one folder per line, `#` comments allowed. Missing folders are skipped; if none
 exist it exits non-zero, so a supervisor can retry until the disk is mounted.
 `--host tailscale` binds the machine's tailnet IPv4.
 
-The first run on a shoot builds 480 px thumbnails into
-`~/.cache/photo-gallery/<hash of folder>/`; later starts take seconds.
+The first run on a shoot builds 480 px thumbnails and an EXIF cache into
+`~/.cache/photo-gallery/<hash of folder>/`; later starts read only new or
+changed files and take about a second. Files added to a shoot appear after a
+restart.
 `gallery.html` is re-read on every request, so page edits need only a reload.
 
 To run it permanently as a systemd user service, see the comments in
