@@ -80,6 +80,10 @@ section h2 span { color: var(--faint); font-weight: 400; }
 .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .cell.cur { outline-color: var(--accent); }
 .cell.rej img { opacity: .28; filter: grayscale(1); }
+/* A pre-cull tool suggested rejecting this frame and nobody has decided yet. */
+.cell.sug img { opacity: .75; }
+.cell.sug::before { content: ""; position: absolute; inset: 0; z-index: 1; border: 2px dashed var(--red);
+  border-radius: 4px; pointer-events: none; }
 .cell.stacked { box-shadow: 4px 4px 0 -1px #0e0e0e, 4px 4px 0 0 #444, 8px 8px 0 -1px #0e0e0e, 8px 8px 0 0 #333; overflow: visible; }
 .cell.stacked > img { border-radius: 4px; }
 .cell.ingroup { background: #12202f; }
@@ -94,6 +98,8 @@ section h2 span { color: var(--faint); font-weight: 400; }
 .b.bl { bottom: 5px; left: 6px; }
 .stars { color: var(--star); letter-spacing: 1px; }
 .rejx { color: var(--red); font-weight: 700; font-size: 15px; }
+.sugx { color: #fff; background: rgba(229,72,77,.8); border-radius: 4px; padding: 0 5px; font-weight: 600; font-size: 11.5px; }
+.ai { color: var(--dim); font-size: 12px; margin-top: 6px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(0,0,0,.6); }
 .dot.l0 { background: var(--red); } .dot.l1 { background: #f5d90a; } .dot.l2 { background: var(--green); }
 .dot.l3 { background: #3e63dd; } .dot.l4 { background: #8e4ec6; }
@@ -200,6 +206,7 @@ kbd { background: var(--panel2); border: 1px solid #444; border-bottom-width: 2p
   <h3>Keys</h3>
   <table>
     <tr><td><kbd>r</kbd></td><td>reject (again to un-reject)</td></tr>
+    <tr><td><kbd>r</kbd> on <span class="sugx">AI ✕?</span></td><td>confirm the suggested reject · any other mark overrides it</td></tr>
     <tr><td><kbd>1</kbd>–<kbd>5</kbd> · <kbd>0</kbd></td><td>set stars · clear rating</td></tr>
     <tr><td><kbd>d</kbd> <kbd>f</kbd> <kbd>g</kbd></td><td>red · green · no colour</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>undo · redo</td></tr>
@@ -222,6 +229,14 @@ kbd { background: var(--panel2); border: 1px solid #444; border-bottom-width: 2p
 "use strict";
 const $ = (s) => document.querySelector(s);
 const LABEL = { red: 0, green: 2 };
+
+// Pre-cull verdicts read from the sidecar description. One is still a
+// suggestion while nobody has marked the frame and the rating is the one the
+// tool wrote; marking the frame here tags it reviewed.
+const AI_RATING = { keep: 2, maybe: 1, reject: -1 };
+const aiPending = (f) => !!f.ai && !f.ai.reviewed && f.rating === AI_RATING[f.ai.v];
+const sugRej = (f) => aiPending(f) && f.ai.v === "reject";
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 let frames = [], byId = new Map(), groups = new Map();
 let visible = [];             // frame ids in display order
 let cur = null;               // current frame id
@@ -273,6 +288,8 @@ const CHIPS = [
   { k: "red", row: "colour", t: '<span class="dot l0"></span> red', test: (f) => f.labels.includes(0) },
   { k: "green", row: "colour", t: '<span class="dot l2"></span> green', test: (f) => f.labels.includes(2) },
   { k: "nolabel", row: "colour", t: "no colour", test: (f) => f.labels.length === 0 },
+  { k: "aisug", row: "ai", t: '<span class="sugx">AI ✕?</span> to review', test: sugRej },
+  { k: "aipend", row: "ai", t: "AI unreviewed", test: aiPending },
 ];
 
 function passes(f) {
@@ -321,7 +338,14 @@ function setRange(lo, hi, commit) {
 function renderFilters() {
   const n = (c) => frames.reduce((a, f) => a + (c.test(f) ? 1 : 0), 0);
   let html = '<span class="lbl">colour</span>';
+  let row = "colour";
   for (const c of CHIPS) {
+    if (c.row !== row) {
+      row = c.row;
+      // Pre-cull chips only matter when some sidecar carries a suggestion.
+      if (row === "ai" && !frames.some((f) => f.ai)) break;
+      html += `<span class="sep"></span><span class="lbl">${row === "ai" ? "pre-cull" : row}</span>`;
+    }
     const s = filt[c.k], cls = s === 1 ? " only" : s === -1 ? " except" : "";
     html += `<button class="chip${cls}" data-chip="${c.k}"><span class="m">${s === 1 ? "only" : "except"}</span><span class="t">${c.t}</span><span class="c">${n(c)}</span></button>`;
   }
@@ -359,7 +383,8 @@ function shortExif(e) {
 }
 function marksHTML(f) {
   let s = "";
-  if (f.rating === -1) s += '<span class="rejx">✕</span>';
+  if (sugRej(f)) s += '<span class="sugx" title="Suggested reject — press r to confirm">AI ✕?</span>';
+  else if (f.rating === -1) s += '<span class="rejx">✕</span>';
   else if (f.rating > 0) s += '<span class="stars">' + "★".repeat(f.rating) + "</span>";
   return s;
 }
@@ -367,7 +392,8 @@ function labelsHTML(f) { return f.labels.map((l) => `<span class="dot l${l}"></s
 
 function cellHTML(f, opts) {
   const cls = ["cell"];
-  if (f.rating === -1) cls.push("rej");
+  if (sugRej(f)) cls.push("sug");
+  else if (f.rating === -1) cls.push("rej");
   if (opts.stacked) cls.push("stacked");
   if (opts.ingroup) cls.push("ingroup"), opts.alt && cls.push("alt");
   if (f.id === cur) cls.push("cur");
@@ -419,15 +445,17 @@ function render() {
 
 function stats() {
   renderFilters();
-  let rated = 0, rej = 0, red = 0, green = 0, un = 0;
+  let rated = 0, rej = 0, red = 0, green = 0, un = 0, sug = 0;
   for (const f of frames) {
-    if (f.rating > 0) rated++; else if (f.rating === -1) rej++; else un++;
+    if (sugRej(f)) sug++;
+    else if (f.rating > 0) rated++; else if (f.rating === -1) rej++; else un++;
     if (f.labels.includes(0)) red++;
     if (f.labels.includes(2)) green++;
   }
   $("#stats").innerHTML = `<span><b>${frames.length}</b> frames</span><span><b>${groups.size}</b> stacks</span>
     <span><b>${un}</b> unrated</span><span style="color:var(--star)"><b>${rated}</b> ★</span>
     <span style="color:var(--red)"><b>${rej}</b> ✕</span>
+    ${sug ? `<span style="color:var(--red)"><b>${sug}</b> AI ✕?</span>` : ""}
     <span style="color:var(--red)"><b>${red}</b> ●</span><span style="color:var(--green)"><b>${green}</b> ●</span>`;
 }
 
@@ -442,7 +470,8 @@ function highlight(scroll = true) {
 function refreshCell(f) {
   const el = cellEl(f.id);
   if (!el) return;
-  el.classList.toggle("rej", f.rating === -1);
+  el.classList.toggle("sug", sugRej(f));
+  el.classList.toggle("rej", f.rating === -1 && !sugRej(f));
   el.querySelector(".b.tl").innerHTML = labelsHTML(f);
   el.querySelector(".b.bl").innerHTML = marksHTML(f);
 }
@@ -462,17 +491,18 @@ async function apply(id, rating, labels, record = true) {
 // time*. Two in flight at once (say a rating then a label) could land out of
 // order, leaving the sidecar with the older full state.
 let writeQ = Promise.resolve();
-function persist(id) {
+function persist(id, force = false) {
   writeQ = writeQ.then(async () => {
     const f = byId.get(id);
     const want = { rating: f.rating, labels: f.labels.slice() };
-    if (want.rating === f.saved.rating && want.labels.join() === f.saved.labels.join()) return;
+    if (!force && want.rating === f.saved.rating && want.labels.join() === f.saved.labels.join()) return;
     try {
       const r = await fetch("/api/mark", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, ...want }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.status);
       f.saved = { rating: j.rating, labels: j.labels };
+      if (j.ai) { f.ai = j.ai; refreshCell(f); stats(); if (fsOpen && cur === id) fsInfo(); }
     } catch (e) {
       f.rating = f.saved.rating; f.labels = f.saved.labels.slice();
       refreshCell(f); stats(); if (fsOpen && cur === id) fsInfo();
@@ -493,7 +523,14 @@ function mark(kind) {
   else if (kind === "red") labels = [LABEL.red];
   else if (kind === "green") labels = [LABEL.green];
   else if (kind === "nolabel") labels = [];
-  apply(cur, rating, labels);
+  // Pressing r on a suggested reject (or re-applying a pending suggestion's own
+  // value) confirms it instead of toggling it off.
+  if (kind === "rej" && sugRej(f)) rating = -1;
+  if (aiPending(f) && rating === f.rating && labels.join() === f.labels.join()) {
+    f.ai.reviewed = true;
+    refreshCell(f); stats(); if (fsOpen) fsInfo();
+    persist(cur, true);
+  } else apply(cur, rating, labels);
   if ((kind === "rej" || /^r\d$/.test(kind)) && $("#advance").checked) move(1);
 }
 
@@ -589,10 +626,12 @@ function fsInfo() {
     ["ISO", e.ISO], ["Exp. comp.", e.ExposureCompensation], ["Program", e.ExposureProgram], ["Metering", e.MeteringMode],
     ["Flash", e.Flash], ["WB", e.WhiteBalance], ["Focus", e.FocusMode], ["AF area", e.AFAreaMode], ["Size", e.ImageSize],
     ["Files", [f.raw && "RAW", f.jpg && "JPEG"].filter(Boolean).join(" + ") + (f.jpg ? "" : " (embedded preview)")]];
-  const mk = f.rating === -1 ? '<span class="rejx">✕ rejected</span>'
+  const mk = sugRej(f) ? '<span class="sugx">AI ✕? suggested reject</span> <span style="color:var(--faint)">r confirms</span>'
+    : f.rating === -1 ? '<span class="rejx">✕ rejected</span>'
     : f.rating > 0 ? `<span class="stars">${"★".repeat(f.rating)}${"☆".repeat(5 - f.rating)}</span>` : '<span style="color:var(--faint)">unrated</span>';
+  const ai = f.ai ? `<div class="ai"><b>AI ${esc(f.ai.v)}</b>${aiPending(f) ? " (unreviewed)" : f.ai.reviewed ? " (reviewed)" : " (overridden)"}: ${esc(f.ai.text)}</div>` : "";
   $("#info").innerHTML = `<h3>${f.name}</h3><div class="sub">${f.folder}${members.length > 1 ? ` · stack of ${members.length} (#${members.indexOf(f) + 1})` : ""}</div>
-    <div class="mark">${mk} ${labelsHTML(f)}</div>
+    <div class="mark">${mk} ${labelsHTML(f)}</div>${ai}
     <dl>${rows.filter((r) => r[1]).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
   $("#pos").textContent = `${i + 1} / ${visible.length}`;
   document.querySelectorAll("#fsbar [data-act]").forEach((b) => {

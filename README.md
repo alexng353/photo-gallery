@@ -68,7 +68,22 @@ address.
 - Rating `-1` is darktable's reject; `0`–`5` are stars. Colour labels use
   darktable's indices (0 red, 2 green) in `darktable:colorlabels`.
 - An existing sidecar is edited in place: only the rating and the colour-label
-  block change, and `darktable:history` is left alone. A missing sidecar gets a
-  minimal one that darktable fills in on import.
+  block change (plus the pre-cull tag below), and `darktable:history` is left
+  alone. A missing sidecar gets a minimal one that darktable fills in on import.
 - darktable reads sidecars only on import, or on startup with "look for
   updated XMP files" enabled.
+
+## Pre-cull suggestions
+
+A vision pre-cull can leave its verdict as the start of `dc:description`:
+`[tag] keep|maybe|reject | reasons ...`. Until you mark that frame yourself,
+the gallery treats the verdict as a suggestion:
+
+- A suggested reject shows a dashed red outline and an `AI ✕?` badge instead
+  of the greyed-out look of a real reject. The header counts these separately.
+- Press `r` on it to confirm the reject. Any other mark overrides it.
+- When you mark a frame, the gallery appends `, reviewed` to the tag. If the
+  rating already differs from the suggestion, the frame counts as reviewed
+  anyway.
+- Filter chips under *pre-cull* show only, or hide, suggested rejects and
+  unreviewed suggestions. Full screen shows the model's reasoning.

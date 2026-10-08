@@ -249,6 +249,17 @@ RE_LABELS = re.compile(
     r"[ \t]*<darktable:colorlabels>.*?</darktable:colorlabels>\n?", re.S)
 RE_DESC_OPEN = re.compile(r"<rdf:Description\b[^>]*?(/?)>", re.S)
 
+# A pre-cull tool (photo-cull's write_xmp) records its verdict as the first
+# words of dc:description: "[tag] keep|maybe|reject | reasons ...". The gallery
+# shows those as suggestions until Alex marks the frame himself, at which point
+# the tag gains ", reviewed" so the suggestion stops being flagged.
+RE_DC_LI = re.compile(
+    r"<dc:description>.*?<rdf:li[^>]*>(.*?)</rdf:li>", re.S)
+RE_AI = re.compile(r"^\s*\[([\w.-]+)\] (keep|maybe|reject)(, reviewed)?")
+RE_AI_UNREVIEWED = re.compile(
+    r"(<dc:description>.*?<rdf:li[^>]*>\s*\[[\w.-]+\] (?:keep|maybe|reject))"
+    r"(?!, reviewed)", re.S)
+
 TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 4.4.0-Exiv2">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -268,14 +279,26 @@ def read_xmp(path):
     try:
         s = open(path, encoding="utf-8").read()
     except OSError:
-        return 0, []
+        return 0, [], None
     m = RE_RATING_ATTR.search(s) or RE_RATING_EL.search(s)
     rating = int(m.group(1)) if m else 0
     lm = re.search(r"<darktable:colorlabels>(.*?)</darktable:colorlabels>",
                    s, re.S)
     labels = sorted({int(x) for x in re.findall(r"<rdf:li>(\d+)</rdf:li>",
                                                 lm.group(1))}) if lm else []
-    return rating, labels
+    return rating, labels, read_ai(s)
+
+
+def read_ai(s):
+    m = RE_DC_LI.search(s)
+    if not m:
+        return None
+    text = html.unescape(m.group(1)).strip()
+    a = RE_AI.match(text)
+    if not a:
+        return None
+    return {"tag": a.group(1), "v": a.group(2), "reviewed": bool(a.group(3)),
+            "text": text[a.end():].lstrip(" |")}
 
 
 def write_xmp(path, image_name, rating, labels):
@@ -319,6 +342,9 @@ def write_xmp(path, image_name, rating, labels):
         m = RE_DESC_OPEN.search(s)
         s = s[:m.end()] + block + s[m.end():]
 
+    # Any mark written here is Alex's own decision about the frame.
+    s = RE_AI_UNREVIEWED.sub(r"\1, reviewed", s, count=1)
+
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(s)
@@ -343,7 +369,7 @@ class App:
         self.lock = threading.Lock()
         for f in frames:
             f["xmp_mtime"] = xmp_mtime(f["xmp"])
-            f["rating"], f["labels"] = read_xmp(f["xmp"])
+            f["rating"], f["labels"], f["ai"] = read_xmp(f["xmp"])
 
     def refresh(self):
         """Pick up sidecars that changed on disk since we last read them."""
@@ -352,7 +378,7 @@ class App:
                 m = xmp_mtime(f["xmp"])
                 if m != f["xmp_mtime"]:
                     f["xmp_mtime"] = m
-                    f["rating"], f["labels"] = read_xmp(f["xmp"])
+                    f["rating"], f["labels"], f["ai"] = read_xmp(f["xmp"])
 
     def payload(self):
         self.refresh()
@@ -372,6 +398,7 @@ class App:
                 "exif": fmt_exif(ex),
                 "rating": f["rating"],
                 "labels": f["labels"],
+                "ai": f["ai"],
             })
         return out
 
@@ -383,8 +410,9 @@ class App:
             name = os.path.basename(f["raw"] or f["jpg"])
             write_xmp(f["xmp"], name, rating, labels)
             f["xmp_mtime"] = xmp_mtime(f["xmp"])
-            f["rating"], f["labels"] = rating, labels
-        return {"id": fid, "rating": rating, "labels": labels}
+            f["rating"], f["labels"], f["ai"] = read_xmp(f["xmp"])
+        return {"id": fid, "rating": f["rating"], "labels": f["labels"],
+                "ai": f["ai"]}
 
 
 def xmp_mtime(path):
